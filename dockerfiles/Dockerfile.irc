@@ -1,13 +1,6 @@
-###############################################################################
-# Gravitino IRC 1.2.0 + PostgreSQL JDBC driver
-#
-# Uses PostgreSQL as the catalog backend — production-grade alternative to MySQL.
-###############################################################################
-
 FROM apache/gravitino-iceberg-rest:1.2.0
 
-# PostgreSQL JDBC driver 42.7.3
 ADD https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.3/postgresql-42.7.3.jar \
-    /opt/gravitino/libs/postgresql-42.7.3.jar
+    /root/gravitino-iceberg-rest-server/libs/postgresql-42.7.3.jar
 
-RUN chmod 644 /opt/gravitino/libs/postgresql-42.7.3.jar
+RUN chmod 644 /root/gravitino-iceberg-rest-server/libs/postgresql-42.7.3.jar
