@@ -3,3 +3,4 @@ benchmark_results.json
 __pycache__/
 *.pyc
 conf/gravitino-irc/gravitino-iceberg-rest-server.conf
+conf/trino/catalog/gravitino_irc.properties
