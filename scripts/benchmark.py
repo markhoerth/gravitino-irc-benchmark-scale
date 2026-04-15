@@ -392,7 +392,7 @@ def print_report(t1, t2, t3, t4, t5):
     print(f"\n{'='*60}")
     print(f"  BENCHMARK RESULTS — Gravitino IRC 1.2.0")
     print(f"  {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    print(f"  Dataset: ~41M rows, AWS S3 us-east-2, MySQL backend")
+    print(f"  Dataset: ~41M rows, AWS S3 us-east-2, PostgreSQL backend")
     print(f"{'='*60}")
 
     hdrs = ["Operation", "Runs", "Min (ms)", "Median (ms)", "P95 (ms)", "Max (ms)"]
