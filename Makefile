@@ -1,154 +1,63 @@
-.PHONY: up down restart logs ps clean reset \
-        spark-sql trino-sql psql \
-        help
+.PHONY: up down down-clean build load-data populate benchmark trino-shell logs status
 
-COMPOSE = docker compose
-
-# ============================================================
-# Gravitino Quickstart — Makefile
-# ============================================================
-
-## Start all services, rebuild changed images, reset postgres volume (standard workflow after git pull)
 up:
-	@echo "Removing postgres volume for clean init..."
-	docker volume rm -f gravitino-quickstart_postgres_data || true
-	$(COMPOSE) up -d --build
-	@echo "Waiting for postgres to be healthy..."
-	@for i in $$(seq 1 30); do \
-		if docker inspect gqs-postgres --format '{{.State.Health.Status}}' 2>/dev/null | grep -q healthy; then \
-			echo "postgres healthy."; \
-			break; \
-		fi; \
-		if [ $$i -eq 30 ]; then \
-			echo "postgres failed to start — restarting..."; \
-			$(COMPOSE) restart postgres; \
-			sleep 5; \
-		fi; \
-		sleep 2; \
-	done
+	@echo "Starting Gravitino IRC scale benchmark environment..."
+	docker compose up -d
 	@echo ""
-	@echo "  Services starting (allow ~5 minutes for full init including Iceberg data load):"
-	@echo "    Gravitino  → http://localhost:8090"
-	@echo "    Trino      → http://localhost:8082"
-	@echo "    CloudBeaver→ http://localhost:8978"
-	@echo "    Airflow    → http://localhost:8083"
-	@echo "    MinIO      → http://localhost:9002"
+	@echo "Services:"
+	@echo "  IRC:      http://localhost:$$(grep IRC_PORT .env | cut -d= -f2)/iceberg"
+	@echo "  Trino:    http://localhost:$$(grep TRINO_PORT .env | cut -d= -f2)"
+	@echo "  Postgres: localhost:$$(grep POSTGRES_PORT .env | cut -d= -f2)"
 	@echo ""
-	@echo "  SQL shells (once services are healthy):"
-	@echo "    make spark-sql   |   make trino-sql   |   make psql"
+	@echo "Next steps:"
+	@echo "  make load-data   — load 2023 + 2024 NYC taxi data (~80M rows)"
+	@echo "  make populate    — create 1,000 namespaces / 10,000 tables"
+	@echo "  make benchmark   — run full benchmark suite"
 
-## Start services without rebuilding or resetting volumes
-up-quick:
-	$(COMPOSE) up -d
-	@echo "Started without volume reset — use 'make up' for a clean start."
-
-## Wait for init container to complete before connecting
-wait-for-init:
-	@echo "Waiting for init to complete..."
-	@until docker logs gqs-init 2>&1 | grep -q "=== Init complete ==="; do \
-		sleep 2; \
-	done
-	@echo "Init complete."
-
-## Rebuild all custom images (run after any Dockerfile or init script changes)
-build:
-	./build.sh
-	$(COMPOSE) build --no-cache irc gravitino init trino spark-sql
-
-## Stop all containers
 down:
-	$(COMPOSE) down
+	docker compose down
 
-## Restart all services
-restart:
-	$(COMPOSE) restart
+down-clean:
+	docker compose down -v --remove-orphans
+	docker image rm -f gravitino-irc-scale:1.2.0 2>/dev/null || true
 
-## Tail logs for all services
+build:
+	docker compose build
+
+# ── Data Loading ──────────────────────────────────────────────────────────────
+# Before running load-data, upload both years to S3:
+#   aws s3 sync ~/data/nyc_taxi_2023/ s3://${S3_BUCKET}/raw/nyc_taxi/2023/
+#   aws s3 sync ~/data/nyc_taxi_2024/ s3://${S3_BUCKET}/raw/nyc_taxi/2024/
+load-data:
+	docker compose exec python python /scripts/load_nyc_taxi.py
+
+# ── Catalog Population ────────────────────────────────────────────────────────
+# Creates 1,000 namespaces with 10 tables each (10,000 tables total).
+# Run after load-data to simulate enterprise-scale catalog.
+populate:
+	docker compose exec python python /scripts/populate_catalog.py
+
+# ── Benchmark ─────────────────────────────────────────────────────────────────
+benchmark:
+	docker compose exec python python /scripts/benchmark.py
+
+# ── Trino shell ───────────────────────────────────────────────────────────────
+trino-shell:
+	docker compose exec trino trino \
+		--server http://localhost:8080 \
+		--catalog gravitino_irc \
+		--schema nyc_taxi
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
 logs:
-	$(COMPOSE) logs -f
+	docker compose logs -f
 
-## Tail logs for a specific service (usage: make logs-svc SVC=gravitino)
-logs-svc:
-	$(COMPOSE) logs -f $(SVC)
+logs-irc:
+	docker compose logs -f gravitino-irc
 
-## Show running containers
-ps:
-	$(COMPOSE) ps
+logs-trino:
+	docker compose logs -f trino
 
-# -------------------------------------------------------
-# SQL Shells
-# -------------------------------------------------------
-
-## Launch Spark SQL shell (connects through Gravitino postgres_demo catalog)
-spark-sql: wait-for-init
-	$(COMPOSE) run --rm spark-sql
-
-## Launch Trino CLI (connects through Gravitino catalog)
-trino-sql: wait-for-init
-	docker exec -it gqs-trino \
-	  trino --server http://localhost:8082 \
-	        --user admin
-
-## Open psql directly on Postgres
-psql:
-	docker exec -it gqs-postgres \
-	  psql -U postgres -d demo_data
-
-## Open psql as gravitino user
-psql-gravitino:
-	docker exec -it gqs-postgres \
-	  psql -U gravitino -d demo_data
-
-# -------------------------------------------------------
-# View test helpers
-# -------------------------------------------------------
-
-## Show views in the sales schema
-show-views:
-	docker exec -it gqs-postgres \
-	  psql -U gravitino -d demo_data -c "\dv sales.*"
-
-## Reload the sales schema (drops and recreates tables + views)
-reload-views:
-	docker exec -i gqs-postgres \
-	  psql -U postgres -d demo_data < postgres/init/03-view-test.sql
-
-## Print Trino EXPLAIN for a view through Gravitino (usage: make explain VIEW=v_order_summary)
-explain:
-	@test -n "$(VIEW)" || (echo "Usage: make explain VIEW=<view_name>" && exit 1)
-	docker exec -it gqs-trino \
-	  trino --server http://localhost:8082 \
-	        --user admin \
-	        --execute "EXPLAIN SELECT * FROM gravitino.\"postgres_demo\".\"sales\".$(VIEW)"
-
-# -------------------------------------------------------
-# Cleanup
-# -------------------------------------------------------
-
-## Remove all containers and named volumes
-clean:
-	$(COMPOSE) down -v --remove-orphans
-
-## Full reset: clean + prune dangling images
-reset: clean
-	docker image prune -f
-
-# -------------------------------------------------------
-# Help
-# -------------------------------------------------------
-help:
-	@echo ""
-	@echo "Gravitino Quickstart"
-	@echo "===================="
-	@echo ""
-	@grep -E '^##' Makefile | sed 's/## /  /'
-	@echo ""
-	@echo "Examples:"
-	@echo "  make up                    # clean start (resets postgres volume)"
-	@echo "  make up-quick              # start without resetting volumes"
-	@echo "  make spark-sql             # Spark SQL shell via Gravitino"
-	@echo "  make trino-sql             # Trino CLI via Gravitino"
-	@echo "  make psql                  # psql on demo_data"
-	@echo "  make explain VIEW=v_open_orders"
-	@echo "  make logs-svc SVC=gravitino"
-	@echo ""
+# ── Status ────────────────────────────────────────────────────────────────────
+status:
+	docker compose ps
