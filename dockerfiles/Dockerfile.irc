@@ -1,14 +1,13 @@
 ###############################################################################
-# Gravitino IRC 1.2.0 + MySQL JDBC driver
+# Gravitino IRC 1.2.0 + PostgreSQL JDBC driver
 #
-# The upstream apache/gravitino-iceberg-rest image does not bundle the MySQL
-# JDBC driver. We add it here so the JDBC catalog backend works with MySQL.
+# Uses PostgreSQL as the catalog backend — production-grade alternative to MySQL.
 ###############################################################################
 
 FROM apache/gravitino-iceberg-rest:1.2.0
 
-# MySQL Connector/J 8.0 — matches MySQL 8.0 server
-ADD https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar \
-    /opt/gravitino/libs/mysql-connector-j-8.0.33.jar
+# PostgreSQL JDBC driver 42.7.3
+ADD https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.3/postgresql-42.7.3.jar \
+    /opt/gravitino/libs/postgresql-42.7.3.jar
 
-RUN chmod 644 /opt/gravitino/libs/mysql-connector-j-8.0.33.jar
+RUN chmod 644 /opt/gravitino/libs/postgresql-42.7.3.jar

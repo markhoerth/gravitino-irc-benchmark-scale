@@ -1,53 +1,50 @@
 ###############################################################################
-# Gravitino IRC Benchmark Environment
+# Gravitino IRC Benchmark — Scale Environment
 #
-# Purpose: Measure Gravitino IRC catalog API latency and query performance
-#          against real AWS S3. No MinIO, no Spark, no Flink.
+# Extended version of gravitino-irc-benchmark with:
+#   - PostgreSQL backend (production-grade vs MySQL)
+#   - 2023 + 2024 NYC taxi data (~80M rows)
+#   - 1,000 namespaces / 10,000 tables catalog scale test
+#   - Higher concurrency tiers
+#   - Polaris side-by-side comparison (coming)
 #
-# Services: MySQL | Gravitino IRC 1.2.0 | Trino | Python (benchmark + loader)
-#
-# Prerequisites:
-#   - AWS credentials configured (IAM instance role recommended on EC2)
-#   - S3 bucket created in same region as EC2 (us-east-2 recommended)
-#   - .env file created from .env.example
+# Services: PostgreSQL | Gravitino IRC 1.2.0 | Trino | Python
 #
 # Usage:
-#   make up          — start all services
-#   make load-data   — register NYC taxi Parquet files as Iceberg table
-#   make benchmark   — run full benchmark suite (REST + Trino)
-#   make down        — stop services
-#   make down-clean  — stop and wipe all volumes
+#   make up             — start all services
+#   make load-data      — load 2023 + 2024 NYC taxi data
+#   make populate       — create 1,000 namespaces / 10,000 tables
+#   make benchmark      — run full benchmark suite
+#   make down-clean     — stop and wipe all volumes
 ###############################################################################
 
-name: gravitino-irc-benchmark
+name: gravitino-irc-scale
 
 networks:
   bench-net:
     driver: bridge
 
 volumes:
-  mysql-data:
+  postgres-data:
 
 services:
 
-  # ── MySQL ──────────────────────────────────────────────────────────────────
-  # Stores Iceberg namespace/table metadata for the IRC.
-  mysql:
-    image: mysql:8.0
-    container_name: mysql
+  # ── PostgreSQL ─────────────────────────────────────────────────────────────
+  # Production-grade catalog backend replacing MySQL.
+  postgres:
+    image: postgres:15
+    container_name: postgres
     networks: [bench-net]
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "${MYSQL_PORT}:3306"
+      - "${POSTGRES_PORT}:5432"
     volumes:
-      - mysql-data:/var/lib/mysql
+      - postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root",
-             "-p${MYSQL_ROOT_PASSWORD}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -55,27 +52,30 @@ services:
     restart: unless-stopped
 
   # ── Gravitino Iceberg REST Catalog (IRC) ───────────────────────────────────
-  # Gravitino 1.2.0, MySQL backend, AWS S3 storage.
-  # REST endpoint: http://localhost:${IRC_PORT}/iceberg
   gravitino-irc:
     build:
       context: .
       dockerfile: dockerfiles/Dockerfile.irc
-    image: gravitino-irc-benchmark:1.2.0
+    image: gravitino-irc-scale:1.2.0
     container_name: gravitino-irc
     networks: [bench-net]
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy
     ports:
       - "${IRC_PORT}:9001"
     environment:
       GRAVITINO_MEM: ${IRC_MEM}
-      GRAVITINO_WAREHOUSE: s3://mhoerth-gravitino-benchmark/
+      GRAVITINO_WAREHOUSE: s3://${S3_BUCKET}/
       GRAVITINO_CREDENTIAL_PROVIDERS: s3-secret-key
       GRAVITINO_S3_ACCESS_KEY: ${AWS_ACCESS_KEY_ID}
       GRAVITINO_S3_SECRET_KEY: ${AWS_SECRET_ACCESS_KEY}
       GRAVITINO_S3_REGION: ${AWS_REGION}
+      GRAVITINO_CATALOG_BACKEND: jdbc
+      GRAVITINO_URI: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      GRAVITINO_JDBC_DRIVER: org.postgresql.Driver
+      GRAVITINO_JDBC_USER: ${POSTGRES_USER}
+      GRAVITINO_JDBC_PASSWORD: ${POSTGRES_PASSWORD}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_REGION: ${AWS_REGION}
@@ -91,9 +91,6 @@ services:
     restart: unless-stopped
 
   # ── Trino ──────────────────────────────────────────────────────────────────
-  # Trino with Iceberg connector pointing at Gravitino IRC via REST catalog.
-  # Web UI: http://localhost:${TRINO_PORT}
-  # Shell:  make trino-shell
   trino:
     image: trinodb/trino:469
     container_name: trino
@@ -117,9 +114,6 @@ services:
     restart: unless-stopped
 
   # ── Python ─────────────────────────────────────────────────────────────────
-  # Runs the data loader and benchmark scripts.
-  # make load-data  → register NYC taxi files as Iceberg table via IRC
-  # make benchmark  → run full REST + Trino benchmark suite
   python:
     image: python:3.11-slim
     container_name: python
@@ -142,7 +136,7 @@ services:
     working_dir: /scripts
     command: >
       /bin/sh -c "
-        pip install --quiet pyiceberg==0.8.0 boto3 trino requests tabulate &&
+        pip install --quiet pyiceberg==0.8.0 pyarrow boto3 trino requests tabulate &&
         tail -f /dev/null
       "
     restart: unless-stopped
