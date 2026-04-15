@@ -1,0 +1,14 @@
+###############################################################################
+# Gravitino IRC 1.2.0 + MySQL JDBC driver
+#
+# The upstream apache/gravitino-iceberg-rest image does not bundle the MySQL
+# JDBC driver. We add it here so the JDBC catalog backend works with MySQL.
+###############################################################################
+
+FROM apache/gravitino-iceberg-rest:1.2.0
+
+# MySQL Connector/J 8.0 — matches MySQL 8.0 server
+ADD https://repo1.maven.org/maven2/com/mysql/mysql-connector-j/8.0.33/mysql-connector-j-8.0.33.jar \
+    /opt/gravitino/libs/mysql-connector-j-8.0.33.jar
+
+RUN chmod 644 /opt/gravitino/libs/mysql-connector-j-8.0.33.jar

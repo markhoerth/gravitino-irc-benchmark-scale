@@ -1,0 +1,148 @@
+###############################################################################
+# Gravitino IRC Benchmark Environment
+#
+# Purpose: Measure Gravitino IRC catalog API latency and query performance
+#          against real AWS S3. No MinIO, no Spark, no Flink.
+#
+# Services: MySQL | Gravitino IRC 1.2.0 | Trino | Python (benchmark + loader)
+#
+# Prerequisites:
+#   - AWS credentials configured (IAM instance role recommended on EC2)
+#   - S3 bucket created in same region as EC2 (us-east-2 recommended)
+#   - .env file created from .env.example
+#
+# Usage:
+#   make up          — start all services
+#   make load-data   — register NYC taxi Parquet files as Iceberg table
+#   make benchmark   — run full benchmark suite (REST + Trino)
+#   make down        — stop services
+#   make down-clean  — stop and wipe all volumes
+###############################################################################
+
+name: gravitino-irc-benchmark
+
+networks:
+  bench-net:
+    driver: bridge
+
+volumes:
+  mysql-data:
+
+services:
+
+  # ── MySQL ──────────────────────────────────────────────────────────────────
+  # Stores Iceberg namespace/table metadata for the IRC.
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    networks: [bench-net]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "${MYSQL_PORT}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root",
+             "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    restart: unless-stopped
+
+  # ── Gravitino Iceberg REST Catalog (IRC) ───────────────────────────────────
+  # Gravitino 1.2.0, MySQL backend, AWS S3 storage.
+  # REST endpoint: http://localhost:${IRC_PORT}/iceberg
+  gravitino-irc:
+    build:
+      context: .
+      dockerfile: dockerfiles/Dockerfile.irc
+    image: gravitino-irc-benchmark:1.2.0
+    container_name: gravitino-irc
+    networks: [bench-net]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    ports:
+      - "${IRC_PORT}:9001"
+    environment:
+      GRAVITINO_MEM: ${IRC_MEM}
+      GRAVITINO_WAREHOUSE: s3://mhoerth-gravitino-benchmark/
+      GRAVITINO_CREDENTIAL_PROVIDERS: s3-secret-key
+      GRAVITINO_S3_ACCESS_KEY: ${AWS_ACCESS_KEY_ID}
+      GRAVITINO_S3_SECRET_KEY: ${AWS_SECRET_ACCESS_KEY}
+      GRAVITINO_S3_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION}
+      GRAVITINO_AUTHENTICATORS: anonymous
+    volumes:
+      - ./conf/gravitino-irc/gravitino-iceberg-rest-server.conf:/opt/gravitino/conf/gravitino-iceberg-rest-server.conf:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9001/iceberg/v1/config"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+
+  # ── Trino ──────────────────────────────────────────────────────────────────
+  # Trino with Iceberg connector pointing at Gravitino IRC via REST catalog.
+  # Web UI: http://localhost:${TRINO_PORT}
+  # Shell:  make trino-shell
+  trino:
+    image: trinodb/trino:469
+    container_name: trino
+    networks: [bench-net]
+    depends_on:
+      gravitino-irc:
+        condition: service_healthy
+    ports:
+      - "${TRINO_PORT}:8080"
+    volumes:
+      - ./conf/trino/config.properties:/etc/trino/config.properties:ro
+      - ./conf/trino/jvm.config:/etc/trino/jvm.config:ro
+      - ./conf/trino/node.properties:/etc/trino/node.properties:ro
+      - ./conf/trino/catalog/gravitino_irc.properties:/etc/trino/catalog/gravitino_irc.properties:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/v1/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    restart: unless-stopped
+
+  # ── Python ─────────────────────────────────────────────────────────────────
+  # Runs the data loader and benchmark scripts.
+  # make load-data  → register NYC taxi files as Iceberg table via IRC
+  # make benchmark  → run full REST + Trino benchmark suite
+  python:
+    image: python:3.11-slim
+    container_name: python
+    networks: [bench-net]
+    depends_on:
+      gravitino-irc:
+        condition: service_healthy
+      trino:
+        condition: service_healthy
+    environment:
+      IRC_URI: http://gravitino-irc:9001/iceberg
+      TRINO_HOST: trino
+      TRINO_PORT: "8080"
+      S3_BUCKET: ${S3_BUCKET}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_REGION: ${AWS_REGION}
+    volumes:
+      - ./scripts:/scripts:ro
+    working_dir: /scripts
+    command: >
+      /bin/sh -c "
+        pip install --quiet pyiceberg==0.8.0 boto3 trino requests tabulate &&
+        tail -f /dev/null
+      "
+    restart: unless-stopped
