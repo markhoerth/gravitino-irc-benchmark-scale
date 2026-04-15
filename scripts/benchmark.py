@@ -349,7 +349,7 @@ def run_tier5():
         ("SHOW SCHEMAS",          "SHOW SCHEMAS IN gravitino_irc"),
         ("SHOW TABLES",           f"SHOW TABLES IN gravitino_irc.{NAMESPACE}"),
         ("DESCRIBE table",        f"DESCRIBE gravitino_irc.{NAMESPACE}.{TABLE_NAME}"),
-        ("COUNT(*) — 41M rows",   f"SELECT COUNT(*) FROM gravitino_irc.{NAMESPACE}.{TABLE_NAME}"),
+        ("COUNT(*) — 80M rows",   f"SELECT COUNT(*) FROM gravitino_irc.{NAMESPACE}.{TABLE_NAME}"),
         ("payment_type aggregation", f"""
             SELECT payment_type, COUNT(*), ROUND(AVG(total_amount), 2)
             FROM gravitino_irc.{NAMESPACE}.{TABLE_NAME}
